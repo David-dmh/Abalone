@@ -1,0 +1,14 @@
+---
+title: "Abalone age prediction (CRISP-DM framework)"
+author: David
+date: 05/2020
+output:
+  pdf_document: default
+  html_document: default
+https://archive.ics.uci.edu/ml/datasets/Abalone
+---
+
+```{r}
+
+```
+
