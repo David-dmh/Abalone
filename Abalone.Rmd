@@ -1,0 +1,505 @@
+---
+title: "Abalone Age (CRISP-DM)"
+author: "David"
+date: May 2021
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: yeti
+  pdf_document: default
+---
+
+# Problem statement
+Dataset:  
+[https://archive.ics.uci.edu/ml/datasets/Abalone](https://archive.ics.uci.edu/ml/datasets/Abalone) 
+
+Create a tool which can be used by researchers in the field to estimate the age of an abalone species based on measurements. This problem may be treated as regression or classification. Both approaches are considered for deployment.
+
+# Data understanding and data preparation
+```{r, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(data.table)
+library(caret)
+library(mlbench)
+library(Metrics)
+library(ggfortify)
+library(Cubist)
+library(pls)
+library(randomForest)
+
+```
+
+
+```{r, echo=FALSE}
+
+setwd("C:/Users/User/Documents/DATA SCIENCE FOLDER/PROJECT FOLDER/Abalone Classification")
+
+```
+
+
+```{r}
+
+abalone <- read.csv("data/abalone.data", header=FALSE, stringsAsFactors=TRUE)
+colnames(abalone) <- c("Sex", "Length", "Diameter", 
+                       "Height", "Whole weight", "Shucked weight", 
+                       "Viscera weight", "Shell weight", "Rings")
+dim(abalone); head(abalone)
+
+```
+
+
+```{r}
+
+cat_EDA <- function(dataframe, i){
+  sum_na <- sum(is.na(dataframe[[i]]))
+  cat("===========", 
+      "\nEDA RESULTS FOR '", colnames(dataframe[i]), "' VECTOR (CATEGORICAL):", 
+      "\n===========", 
+      "\nCount:\t", length(dataframe[[i]]), 
+      "\nMissing values (%):\t", ((sum(is.na(dataframe[[i]])))/length(dataframe[[i]]))*100, 
+      "\nCardinality:\t", length(names(table(dataframe[[i]]))),
+      "\n1st Mode:\t", names(sort(table(dataframe[[i]]), 
+                                decreasing=T))[1], 
+      "\n1st Mode Freq.:\t", sort(table(dataframe[[i]]), 
+                                decreasing=T)[[1]],
+      "\n1st Mode (%):\t", sort(table(dataframe[[i]]), 
+                              decreasing=T)[[1]]/length(dataframe[[i]])*100, 
+      "\n2nd Mode:\t", names(sort(table(dataframe[[i]]), 
+                                decreasing=T))[2], 
+      "\n2nd Mode Freq.:\t", sort(table(dataframe[[i]]), 
+                                decreasing=T)[[2]],
+      "\n2nd Mode (%):\t", sort(table(dataframe[[i]]), 
+                              decreasing=T)[[2]]/length(dataframe[[i]])*100, 
+      "\n\n")
+  
+  cat("Summary:\n")
+  print(summary(dataframe[[i]]))
+  cat("\nDistinct values:")
+  print(table(dataframe[[i]]))
+  barplot(table(dataframe[[i]]), 
+       xlab=colnames(dataframe[i]), 
+       main=i)
+}
+
+cont_EDA <- function(dataframe, i){
+  check_null <- any(is.null(dataframe))
+  check_na <- any(is.na(dataframe))
+  cat("===========", 
+      "\nEDA RESULTS FOR '", colnames(dataframe[i]), "' VECTOR (CONTINUOUS):", 
+      "\n===========",
+      "\nCount:\t", length(dataframe[[i]]) , 
+      "\nMissing values (%):\t", ((sum(is.na(dataframe[[i]]))) / length(dataframe[[i]])) * 100, 
+      "\nCardinality:\t", length(names(table(dataframe[[i]]))),  
+      "\nSD:\t", sd(dataframe[[i]]),
+      "\n\n")
+  
+  cat("Summary:\n")
+  print(summary(dataframe[[i]]))
+  cat("\n")
+  hist(dataframe[[i]], 
+       xlab=colnames(dataframe[i]), 
+       main=i)
+}
+
+```
+
+
+```{r}
+
+# pre-cleaning EDA - categorical
+cat_EDA(abalone, 1)
+
+```
+
+
+```{r}
+
+# pre-cleaning EDA - continuous
+par(mfrow=c(3, 3)); for(i in 2:9){cont_EDA(abalone, i)}
+
+```
+
+
+```{r}
+
+# check for outliers - continuous features
+par(mfrow=c(2, 2))
+
+for(i in c(2:9)){
+  if(i == 6){par(mfrow=c(2, 2))}
+  boxplot(abalone[i], xlab=colnames(abalone[i]), main=i)
+  cat("Outliers for column", i, colnames(abalone[i]), ":", length(boxplot.stats(abalone[[i]])$out), "\n")
+}
+
+```
+
+
+```{r}
+
+# height may have outliers worth examining more as seen with the boxplot
+out_ind <- c()
+
+for(i in c(2:9)){
+  vals_out <- boxplot.stats(abalone[[i]])$out
+  out_ind <- unique(c(out_ind, which(abalone[[i]] %in% c(vals_out))))
+}
+
+dim(abalone)
+abalone <- abalone[-c(out_ind), ]
+dim(abalone)
+
+```
+
+
+```{r}
+
+# cat feature(s) vs target
+# abalone Sex is only cat feature
+
+# plot paired plots for each categorical variable, useful as reference
+# get combinations, only using 2 cols here but can take many to combine at scale
+combs <- expand.grid(c(1, 9), 
+                     c(1, 9))
+combs <- data.frame(with(combs, cbind(Var2, Var1)))
+colnames(combs) <- c("Vec1", "Vec2")
+
+# remove duplicates (avoid plotting a column against itself)
+to_remove <- c()
+
+for(row in 1:nrow(combs)){
+  if(combs[row, "Vec1"]==combs[row, "Vec2"]){
+    to_remove <- c(to_remove, row)
+  }
+}
+
+combs <- combs[-c(to_remove), ]
+
+for(row in 1:nrow(combs)){
+  cont_table <- table(abalone[[combs[row, ][[2]]]], abalone[[combs[row, ][[1]]]])
+  barplot(prop.table(cont_table, 2), names.arg=names(table(abalone[combs[row, ][[1]]])), 
+          legend.text=names(table(abalone[combs[row, ][[2]]])), 
+          main=colnames(abalone[combs[row, ][[2]]]), 
+          xlab=colnames(abalone[combs[row, ][[1]]]))
+}
+
+```
+
+
+```{r}
+
+# continuous + categorical pairwise visualisations
+combs_2 <- expand.grid(c(2, 3, 4, 5, 6, 7, 8, 9), 
+                       c(1))
+combs_2 <- data.frame(with(combs_2, cbind(Var2, Var1)))
+colnames(combs_2) <- c("Vec1", 
+                       "Vec2")
+
+for(row in 1:nrow(combs_2)){
+  boxplot(data=abalone, 
+          abalone[[combs_2[row, 2]]] ~ abalone[[combs_2[row, 1]]],
+          xlab=colnames(abalone[combs_2[row, 1]]),
+          ylab=colnames(abalone[combs_2[row, 2]]))
+}
+
+```
+
+# Modeling and evaluation
+## Checking dimensionality
+
+```{r Principal components analysis}
+
+my_pca <- prcomp(purrr::keep(abalone, is.numeric), center=TRUE, scale=TRUE)
+autoplot(my_pca, loadings=TRUE, loadings.label=TRUE, loadings.label.size=5, loadings.colour="blue", alpha=.2)
+my_pca; summary(my_pca) 
+
+```
+
+## Exploring feature importance
+```{r}
+
+corm <- round(cor(abalone[, -1]), 2); corm
+
+```
+
+```{r}
+
+set.seed(1)
+highcorr <- findCorrelation(corm, cutoff=.5)
+abalone$Rings <- as.factor(abalone$Rings)
+
+# feature importance w/ Learning Vector Quantization (LVQ) model
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+model <- train(Rings ~ Length + Diameter + Height + `Whole weight` + `Shucked weight` + `Viscera weight` + `Shell weight`,
+               data=abalone, method="lvq", preProcess="scale", trControl=control)
+# model <- caret::train(Rings ~ Length + Diameter + Height + `Whole weight` + `Shucked weight` + `Viscera weight` + `Shell weight`,
+#                data=abalone, method="lvq", preProcess="scale", trControl=control)
+importance <- varImp(model, scale=F)
+print(importance)
+plot(importance)
+
+```
+
+
+```{r}
+
+# average importance for each feature (across the 12 distinct target values)
+# mostly all equal, height least important yet still significant
+imp_df <- importance$importance
+
+for(r in 1:nrow(imp_df)){
+    cat(rownames(imp_df[r, ]),
+        mean(as.numeric(imp_df[r, ])),
+        "\n")
+}
+
+```
+
+## Feature selecton (caret)
+```{r}
+
+# using random forest as selection function
+set.seed(1)
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+results <- rfe(abalone[, 2:8], abalone[, 9], sizes=c(2:8), rfeControl=control)
+print(results)
+predictors(results)
+plot(results, type=c("g", "o"))
+
+```
+
+## Multiple linear regression
+Initially we consider treating the problem of Rings prediction as a regression (predicting a quantitative value).
+```{r}
+
+abalone$Rings <- as.integer(abalone$Rings)
+corrplot::corrplot(purrr::keep(abalone, is.numeric) %>% cor(), addCoef.col="black"); dim(abalone)
+
+```
+
+
+```{r}
+
+# reduce collinearity by identifying extremes - 95% cutoff
+to_remove <- caret::findCorrelation(corm, cutoff=.95, exact=FALSE)
+abalone <- abalone[, -c(to_remove)]
+head(abalone)
+
+```
+
+
+```{r}
+
+# perform stratified random split
+set.seed(1)
+train_index <- createDataPartition(abalone$Rings, p=.8, list=FALSE)
+abalone_train <- abalone[ train_index, ]
+abalone_test  <- abalone[-train_index, ]
+
+dim(abalone_train); dim(abalone_test)
+
+```
+
+
+```{r}
+
+lm_mod <- lm(Rings ~ ., data=abalone_train)
+summary(lm_mod)
+plot(cbind(abalone_train$Rings, lm_mod$fitted.values))
+
+```
+
+
+```{r}
+
+# evaluate on test set
+lm_mod_pred <- predict(lm_mod, abalone_test)
+cat("RMSE:", rmse(abalone_test$Rings, lm_mod_pred), "\n")
+cat("Accuracy:", accuracy(abalone_test$Rings, round(lm_mod_pred)))
+# lr preds
+cbind(abalone_test$Rings, lm_mod_pred) %>% round(2) %>% head(10)
+
+```
+
+
+## Model tree
+```{r}
+
+head(abalone)
+
+```
+
+
+```{r}
+
+preds <- c("Sex", "Whole weight", "Viscera weight", "Shell weight")
+train_pred <- abalone[train_index, preds]
+test_pred <- abalone[-train_index, preds]
+train_resp <- abalone$Rings[train_index]
+test_resp <- abalone$Rings[-train_index]
+model_tree <- cubist(y=train_resp, x=train_pred)
+model_tree; summary(model_tree)
+
+```
+
+
+```{r}
+
+model_tree_pred <- predict(model_tree, test_pred)
+cat("RMSE:", rmse(abalone_test$Rings, round(model_tree_pred)), "\n")
+cat("Accuracy:", accuracy(abalone_test$Rings, round(model_tree_pred)))
+cbind(abalone_test$Rings, model_tree_pred) %>% round(2) %>% head(10)
+
+```
+
+## Principal components regression
+```{r Principal components regression}
+
+set.seed(1)
+pcr_fit <- pcr(Rings~., data=abalone, subset=train_index, scale=T, validation="CV")
+summary(pcr_fit)
+validationplot(pcr_fit, val.type="MSEP")
+
+pcr_pred <- predict(pcr_fit, abalone_test[-7], ncomp=5)
+cat("RMSE:", rmse(abalone_test$Rings, c(pcr_pred)), "\n")
+cat("Accuracy:", accuracy(abalone_test$Rings, round(c(pcr_pred))))
+
+```
+
+## Partial least squares
+```{r Partial least squares}
+
+set.seed(1)
+pls_fit <- plsr(Rings~., data=abalone, subset=train_index, scale=T, validation="CV")
+summary(pls_fit)
+validationplot(pls_fit, val.type="MSEP")
+
+pls_pred <- predict(pls_fit, abalone_test[-7], ncomp=4)
+cat("RMSE:", rmse(abalone_test$Rings, c(pls_pred)), "\n")
+cat("Accuracy:", accuracy(abalone_test$Rings, round(c(pls_pred))))
+
+```
+
+## Random forest
+### Regression approach
+```{r Random forest}
+
+rf_train <- abalone_train # train
+colnames(rf_train)[3:6] <- c("Whole_weight", "Shucked_weight", 
+                               "Viscera_weight", "Shell_weight")
+
+rf_test <- abalone_test[-7] # test
+colnames(rf_test)[3:6] <- c("Whole_weight", "Shucked_weight", 
+                       "Viscera_weight", "Shell_weight")
+
+set.seed(1)
+rf_mod <- randomForest(Rings ~., data=rf_train, 
+                           importance=TRUE, proximity=TRUE)
+print(rf_mod)
+
+rf_pred <- predict(rf_mod, newdata=rf_test, type="response")
+cat("RMSE:", rmse(abalone_test$Rings, c(rf_pred)), "\n")
+cat("Accuracy:", accuracy(abalone_test$Rings, round(c(rf_pred))))
+
+# rf preds
+cbind(abalone_test$Rings, rf_pred) %>% round(2) %>% head(10)
+
+```
+
+Tune the model using tuneRF from randomForest
+```{r Tuning RF}
+
+set.seed(1)
+bestmtry <- tuneRF(rf_train[, -7], rf_train$Rings, stepFactor=1.5, improve=1e-5, ntree=500)
+print(bestmtry)
+
+```
+
+Use best mtry of 2 for improved model
+```{r}
+
+set.seed(1)
+rf_mod <- randomForest(Rings ~., data=rf_train, 
+                           importance=TRUE, proximity=TRUE, mtry=2)
+print(rf_mod)
+
+rf_pred <- predict(rf_mod, newdata=rf_test, type="response")
+cat("RMSE:", rmse(abalone_test$Rings, c(rf_pred)), "\n")
+cat("Accuracy:", accuracy(abalone_test$Rings, round(c(rf_pred))))
+
+# rf preds
+cbind(abalone_test$Rings, rf_pred) %>% round(2) %>% head(10)
+
+```
+
+### Classification approach
+The dataset 'as is' makes it challenging to predict with high accuracy the 
+exact number of Rings the dataset info sheet mentions similar scores as 
+benchmarks to those predicted below. These new predictions were obtained
+after encoding the Rings as range bins. This allowed a higher prediction 
+accuracy and improved RMSE. The Shiny Web App should allow for selection of 
+predictions based on either regression or classification.
+
+Binning Rings:
+
+* <5 (young age)
+* 5 <= x < 10 (middle age)
+* x >= 10 (old age)
+
+```{r}
+
+abalone_binned <- abalone
+abalone_binned$Rings <- cut(abalone_binned$Rings, breaks=c(-Inf, 5, 10, +Inf))
+head(abalone_binned)
+
+```
+
+
+```{r}
+
+rf_mod2_dat <- abalone_binned[train_index, ]
+colnames(rf_mod2_dat)[3:6] <- c("Whole_weight", "Shucked_weight",
+                               "Viscera_weight", "Shell_weight")
+rf_mod2_dat$Rings <- factor(rf_mod2_dat$Rings)
+set.seed(1)
+rf_mod2 <- randomForest::randomForest(Rings ~., data=rf_mod2_dat,
+                           importance=TRUE, proximity=TRUE)
+print(rf_mod2)
+
+rf_mod2_dat_test <- abalone_binned[-train_index, ]
+colnames(rf_mod2_dat_test)[3:6] <- c("Whole_weight", "Shucked_weight",
+                               "Viscera_weight", "Shell_weight")
+rf_pred2 <- predict(rf_mod2, newdata=rf_mod2_dat_test, type="response")
+cat("Accuracy:", accuracy(as.numeric(rf_mod2_dat_test$Rings), as.numeric(rf_pred2)))
+cat("RMSE:", rmse(as.numeric(rf_mod2_dat_test$Rings), as.numeric(rf_pred2)))
+
+# rf_mod2 preds
+cbind(rf_mod2_dat_test$Rings, rf_pred2) %>% head(10)
+
+```
+
+## Model summary
+The Random Forest algorithm provided the best fit in terms of RMSE. The Random Forest model can be used in production. Additional feature engineering is required, as mentioned by the researchers. See 'abalone.names' supplied in /data folder (GitHub).
+Here is a summary of the results:
+
+* Multiple Linear Regression - Accuracy= 0.258; RMSE=1.526
+* Model Tree - Accuracy=0.305; RMSE=1.596
+* Principal Components Regression - Accuracy=0.250; RMSE=1.533
+* Partial Least Squares - Accuracy=0.245; RMSE=1.528
+* Random Forest Regression (untuned) - Accuracy=0.264; RMSE=1.499
+* Random Forest Regression (tuned) - Accuracy=0.264; RMSE=1.499 (no improvement)
+* Random Forest Classification - Accuracy=0.777; RMSE=0.480
+
+# Deployment
+View Shiny app at:  
+[davidmh.shinyapps.io/abalone_age_predictor](https://davidmh.shinyapps.io/abalone_age_predictor/)  
+Download shinytestdata.csv in data/ folder (GitHub) to upload to app and get age predictions.
+
+```{r Deployment}
+
+saveRDS(rf_mod, "Abalone_Age_Predictor/rf_mod.rds") # save rf regression model
+saveRDS(rf_mod2, "Abalone_Age_Predictor/rf_mod2.rds") # save rf classification model
+
+```
